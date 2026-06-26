@@ -6,6 +6,10 @@ import {
   Book, CheckCircle, XCircle, Clock
 } from 'lucide-react';
 
+import { Show, SignInButton, SignUpButton, UserButton, ClerkLoading } from "@clerk/react";
+
+import logoImg from './assets/logo.png';
+
 // --- API Helpers ---
 const callGemini = async (prompt) => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -38,93 +42,246 @@ const callGemini = async (prompt) => {
   
 };
 
-// --- Mock Initial Data ---
-const MOCK_BOOKS = [
-  { id: 1, title: 'Dune', author: 'Frank Herbert', totalPages: 412, currentPage: 412, status: 'read', rating: 4.5, coverColor: 'bg-amber-700', genre: 'Science Fiction', notes: 'Incredible world-building. The political intrigue is fascinating.', coverUrl: 'https://books.google.com/books/content?id=B1hSG45JCX4C&printsec=frontcover&img=1&zoom=1&source=gbs_api' },
-  { id: 2, title: 'Project Hail Mary', author: 'Andy Weir', totalPages: 496, currentPage: 250, status: 'reading', rating: 0, coverColor: 'bg-slate-800', genre: 'Science Fiction', notes: 'Amaze! The science problem-solving is so fun.', coverUrl: null },
-  { id: 3, title: 'The Three-Body Problem', author: 'Cixin Liu', totalPages: 400, currentPage: 0, status: 'want_to_read', rating: 0, coverColor: 'bg-red-900', genre: 'Science Fiction', notes: '', coverUrl: null },
-  { id: 4, title: '1984', author: 'George Orwell', totalPages: 328, currentPage: 150, status: 'dnf', rating: 2.25, coverColor: 'bg-stone-800', genre: 'Dystopian', notes: 'A bit too bleak for me right now.', coverUrl: null }
-];
 
 // --- Main App Component ---
 export default function App() {
-  const [books, setBooks] = useState(MOCK_BOOKS);
+  const [books, setBooks] = useState([]);
   const [activeTab, setActiveTab] = useState('library'); // library, metrics
   const [selectedBook, setSelectedBook] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
 
-  const handleUpdateBook = (id, updates) => {
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+
+// --- Fetch Database on Startup ---
+useEffect(() => {
+    const loadLibrary = async () => {
+      try {
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+        const response = await fetch(`${API_URL}/api/books`);
+        if (!response.ok) throw new Error('Failed to fetch from database');
+
+        const databaseBooks = await response.json();
+        
+        // NEW: Translate MongoDB's "_id" into React's "id"
+        const normalizedBooks = databaseBooks.map(book => ({
+          ...book,
+          id: book._id
+        }));
+        
+        setBooks(normalizedBooks);
+        
+      } catch (error) {
+        console.error("Error loading library:", error);
+      }
+    };
+    loadLibrary();
+  }, []);
+
+  const handleUpdateBook = async (id, updates) => {
+    // 1. Instantly update the UI so it feels snappy
     setBooks(books.map(b => b.id === id ? { ...b, ...updates } : b));
     if (selectedBook && selectedBook.id === id) {
       setSelectedBook({ ...selectedBook, ...updates });
     }
+
+    // 2. Secretly save the changes to the database
+    try {
+      const response = await fetch(`${API_URL}/api/books/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updates),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save changes to the database');
+      }
+    } catch (error) {
+      console.error("Error updating book:", error);
+      console.warn("Changes may not have saved to the database.");
+    }
   };
 
-  const handleAddBook = (newBook) => {
-    const book = {
-      ...newBook,
-      id: Date.now(),
-      currentPage: 0,
-      status: 'want_to_read',
-      rating: 0,
-      notes: ''
-    };
-    setBooks([...books, book]);
-    setShowAddModal(false);
+  const handleAddBook = async (newBook) => {
+    // 1. Prevent Duplicates
+    const isDuplicate = books.some(b => b.title.toLowerCase() === newBook.title.toLowerCase());
+    if (isDuplicate) {
+      alert(`You already have "${newBook.title}" in your library!`);
+      return false; // Tell the modal it failed
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/api/books`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newBook),
+      });
+
+      if (!response.ok) throw new Error('Failed to save book to the database');
+
+      const savedBook = await response.json();
+      // NEW: Translate the new book's ID too!
+      savedBook.id = savedBook._id; 
+      setBooks([...books, savedBook]);
+      
+      // 2. Success Notification
+      alert(`🎉 "${savedBook.title}" was successfully added to your library!`);
+      return true; // Tell the modal it succeeded!
+      
+    } catch (error) {
+      console.error("Error adding book:", error);
+      alert("Failed to add book. Make sure your backend server is running!");
+      return false;
+    }
+  };
+
+  // 3. NEW: Delete Function
+const handleDeleteBook = async (id) => {
+    const confirmDelete = window.confirm("Are you sure you want to permanently delete this book?");
+    if (!confirmDelete) return;
+
+    try {
+      const response = await fetch(`${API_URL}/api/books/${id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) throw new Error('Failed to delete from database');
+
+      // 🛡️ BULLETPROOF STATE UPDATES
+      // Using 'prevBooks' guarantees React looks at the live, current list of books
+      setBooks(prevBooks => prevBooks.filter(b => (b.id !== id) && (b._id !== id)));
+      
+      // Force the screen back to the library view instantly
+      setSelectedBook(null); 
+      
+    } catch (error) {
+      console.error("Error deleting book:", error);
+      alert("Failed to delete the book.");
+    }
   };
 
   return (
-    <div className="min-h-screen bg-[#FDFBF7] text-stone-800 font-sans selection:bg-amber-200">
-      {/* Top Nav */}
-      <nav className="bg-white/80 backdrop-blur-md border-b border-stone-200 sticky top-0 z-40">
-        <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+    // Warmer cream background for the whole app
+    <div className="min-h-screen bg-[#FCF9F2] text-stone-800 font-sans selection:bg-orange-200">
+      
+      {/* Softer, warmer Navigation Bar */}
+      <nav className="bg-[#FCF9F2]/90 backdrop-blur-md border-b border-orange-900/10 sticky top-0 z-40">
+        <div className="max-w-5xl mx-auto px-6 py-2 flex items-center justify-between">
+          
+          {/* THE LOGO - Massively increased size and removed rigid padding */}
           <div 
-            className="flex items-center gap-2 cursor-pointer"
+            className="flex items-center cursor-pointer hover:opacity-80 transition-transform hover:scale-105 duration-300 origin-left"
             onClick={() => { setActiveTab('library'); setSelectedBook(null); }}
           >
-            <div className="w-8 h-8 bg-amber-700 rounded-lg flex items-center justify-center text-white shadow-sm">
-              <BookOpen size={18} />
-            </div>
-            <h1 className="font-serif font-bold text-xl tracking-tight text-amber-950">BookNook</h1>
+            <img 
+              src={logoImg} 
+              alt="BookNook" 
+              className="h-20 md:h-28 w-auto object-contain drop-shadow-sm" 
+            />
           </div>
           
-          <div className="flex items-center gap-1 md:gap-4 bg-stone-100 p-1 rounded-full">
+          {/* Cozy Pill Tabs */}
+          <div className="flex items-center gap-1 md:gap-2 bg-[#F2E8DC] p-1.5 rounded-full shadow-inner border border-orange-900/5">
             <button 
               onClick={() => { setActiveTab('library'); setSelectedBook(null); }}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${activeTab === 'library' && !selectedBook ? 'bg-white shadow-sm text-amber-900' : 'text-stone-500 hover:text-stone-800'}`}
+              className={`px-5 py-2 rounded-full text-sm font-bold transition-all duration-300 ${activeTab === 'library' && !selectedBook ? 'bg-white shadow-sm text-[#C05D22]' : 'text-stone-500 hover:text-[#C05D22]'}`}
             >
               Library
             </button>
             <button 
               onClick={() => { setActiveTab('metrics'); setSelectedBook(null); }}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${activeTab === 'metrics' && !selectedBook ? 'bg-white shadow-sm text-amber-900' : 'text-stone-500 hover:text-stone-800'}`}
+              className={`px-5 py-2 rounded-full text-sm font-bold transition-all duration-300 ${activeTab === 'metrics' && !selectedBook ? 'bg-white shadow-sm text-[#C05D22]' : 'text-stone-500 hover:text-[#C05D22]'}`}
             >
               Metrics
             </button>
           </div>
           
-          <button 
-            onClick={() => setShowAddModal(true)}
-            className="bg-amber-700 hover:bg-amber-800 text-white p-2 md:px-4 md:py-2 rounded-full flex items-center gap-2 transition-colors shadow-md hover:shadow-lg"
-          >
-            <Plus size={18} /> <span className="hidden md:inline font-medium text-sm">Add Book</span>
-          </button>
+          <div className="flex items-center gap-4">
+            {/* Terracotta Action Button */}
+            <button 
+              onClick={() => setShowAddModal(true)}
+              className="bg-[#C05D22] hover:bg-[#A34B18] text-white p-2.5 md:px-6 md:py-2.5 rounded-full flex items-center gap-2 transition-all shadow-md hover:shadow-lg font-bold"
+            >
+              <Plus size={18} strokeWidth={3} /> <span className="hidden md:inline text-sm">Add Book</span>
+            </button>
+            
+            {/* --- What logged-out users see (The "Login Page") --- */}
+        <Show when="signed-out">
+          <div className="flex flex-col items-center justify-center h-[70vh] text-center animate-in fade-in zoom-in duration-700">
+            <img 
+              src={logoImg} 
+              alt="Welcome to BookNook" 
+              className="h-48 md:h-64 w-auto object-contain mb-2 drop-shadow-xl hover:scale-105 transition-transform duration-500" 
+            />
+            <h2 className="text-3xl md:text-4xl font-serif font-bold text-stone-800 mb-4 tracking-tight">Your cozy digital library.</h2>
+            <p className="text-stone-500 max-w-md mb-8 text-lg font-medium">Log in or create an account to start tracking your reading journey.</p>
+            <div className="flex gap-4">
+              <SignInButton mode="modal">
+                <button className="bg-[#C05D22] hover:bg-[#A34B18] text-white px-8 py-3.5 rounded-full font-bold shadow-lg hover:shadow-xl transition-all hover:-translate-y-0.5 text-lg">Sign In</button>
+              </SignInButton>
+              <SignUpButton mode="modal">
+                <button className="bg-stone-800 text-white px-8 py-3.5 rounded-full font-bold shadow-lg hover:shadow-xl hover:bg-stone-900 transition-all hover:-translate-y-0.5 text-lg">Sign Up</button>
+              </SignUpButton>
+            </div>
+          </div>
+        </Show>
+            <Show when="signed-in">
+              <UserButton afterSignOutUrl="/" />
+            </Show>
+          </div>
+
         </div>
       </nav>
+    
 
       {/* Main Content */}
+      {/* Main Content */}
       <main className="max-w-5xl mx-auto p-6 pb-24">
-        {selectedBook ? (
-          <BookDetailView 
-            book={selectedBook} 
-            onUpdate={(updates) => handleUpdateBook(selectedBook.id, updates)}
-            onBack={() => setSelectedBook(null)}
-          />
-        ) : activeTab === 'library' ? (
-          <LibraryView books={books} onSelect={setSelectedBook} onAddBook={handleAddBook} />
-        ) : (
-          <MetricsView books={books} />
-        )}
+        
+        <ClerkLoading>
+          <div className="flex flex-col items-center justify-center h-[60vh] text-stone-500 animate-in fade-in">
+            <div className="w-12 h-12 border-4 border-amber-200 border-t-amber-700 rounded-full animate-spin mb-4"></div>
+            <p className="font-bold text-lg">Clerk is attempting to connect...</p>
+          </div>
+        </ClerkLoading>
+        
+        {/* --- What logged-out users see (The "Login Page") --- */}
+        <Show when="signed-out">
+          <div className="flex flex-col items-center justify-center h-[60vh] text-center animate-in fade-in zoom-in duration-500">
+            <img 
+              src={logoImg} 
+              alt="Welcome to BookNook" 
+              className="h-32 md:h-40 w-auto object-contain mb-4 drop-shadow-md" 
+            />
+            <p className="text-stone-500 max-w-md mb-8 text-lg">Your personal, digital library. Log in or create an account to start tracking your reading journey.</p>
+            <div className="flex gap-4">
+              <SignInButton mode="modal">
+                <button className="bg-amber-700 hover:bg-amber-800 text-white px-8 py-3 rounded-full font-bold shadow-md transition-colors text-lg">Sign In</button>
+              </SignInButton>
+              <SignUpButton mode="modal">
+                <button className="bg-stone-900 text-white px-8 py-3 rounded-full font-bold shadow-md hover:bg-stone-800 transition-colors text-lg">Sign Up</button>
+              </SignUpButton>
+            </div>
+          </div>
+        </Show>
+
+        {/* --- What logged-in users see (The Actual App) --- */}
+        <Show when="signed-in">
+          {selectedBook ? (
+            <BookDetailView 
+              book={selectedBook} 
+              onUpdate={(updates) => handleUpdateBook(selectedBook.id, updates)}
+              onBack={() => setSelectedBook(null)}
+              onDelete={handleDeleteBook} // <--- ADD THIS LINE
+            />
+          ) : activeTab === 'library' ? (
+            <LibraryView books={books} onSelect={setSelectedBook} onAddBook={handleAddBook} />
+          ) : (
+            <MetricsView books={books} />
+          )}
+        </Show>
+
       </main>
 
       {showAddModal && <AddBookModal onClose={() => setShowAddModal(false)} onAdd={handleAddBook} />}
@@ -165,7 +322,6 @@ function LibraryView({ books, onSelect, onAddBook }) {
     setSuggestionsType(type);
     setSuggestions([]);
     
-    // Get ALL existing titles to prevent recommending duplicates
     const allExistingTitles = books.map(b => `"${b.title}"`).join(', ');
     
     let prompt = "";
@@ -178,10 +334,19 @@ function LibraryView({ books, onSelect, onAddBook }) {
 
     try {
       const rawRes = await callGemini(prompt);
+      
+      // 🛡️ THE NEW SAFETY CHECK 🛡️
+      // If the API failed and returned our error string, stop immediately!
+      if (rawRes.includes('**Error')) {
+        console.error("AI API Issue:", rawRes);
+        alert("The AI recommendation engine is currently busy. Please try again in a few moments!");
+        setLoadingType(null);
+        return; // Exits the function before trying to parse bad data
+      }
+
       const cleanRes = rawRes.replace(/```json/g, '').replace(/```/g, '').trim();
       const parsed = JSON.parse(cleanRes);
       
-      // Secondary safety check: filter out any that might match existing titles anyway
       const safeSuggestions = Array.isArray(parsed) 
         ? parsed.filter(s => !books.some(b => b.title.toLowerCase() === s.title.toLowerCase()))
         : [];
@@ -189,7 +354,9 @@ function LibraryView({ books, onSelect, onAddBook }) {
       setSuggestions(safeSuggestions);
     } catch (e) {
       console.error("Failed to parse suggestions", e);
+      alert("Oops! The AI sent back data we couldn't read. Let's try that again.");
     }
+    
     setLoadingType(null);
   };
 
@@ -288,17 +455,20 @@ function LibraryView({ books, onSelect, onAddBook }) {
     <div className="space-y-32 mt-12 mb-20 animate-in fade-in duration-500">
       {/* Shelf 1: Currently Reading */}
       <div className="relative group">
-        <div className="flex items-center justify-between mb-8 pr-4">
-          <h2 className="text-xl font-serif font-semibold text-amber-900 flex items-center gap-2">
-            <BookOpenCheck size={24} className="text-amber-700"/> Currently Reading
-          </h2>
+        <div className="flex items-center justify-between mb-4 pr-4 relative z-20">
+          <div className="flex items-center gap-3">
+            <BookOpenCheck size={32} className="text-[#C05D22] drop-shadow-sm shrink-0" />
+            <h2 className="font-['Noto_Serif'] italic font-bold text-4xl md:text-5xl text-[#C05D22] tracking-tight drop-shadow-sm">
+              Currently Reading
+            </h2>
+          </div>
         </div>
         
         {readingBooks.length > 0 && (
           <>
             <button 
               onClick={() => scrollShelf(shelf1Ref, 'left')}
-              className="absolute left-0 bottom-16 md:bottom-24 z-30 p-2 bg-white/95 backdrop-blur shadow-lg border border-stone-200 text-stone-500 hover:text-amber-700 hover:bg-white rounded-full opacity-0 group-hover:opacity-100 transition-all focus:opacity-100 hover:scale-110"
+              className="absolute left-0 bottom-16 md:bottom-24 z-40 p-2 bg-white/95 backdrop-blur shadow-lg border border-stone-200 text-stone-500 hover:text-amber-700 hover:bg-white rounded-full opacity-0 group-hover:opacity-100 transition-all focus:opacity-100 hover:scale-110"
               aria-label="Scroll left"
             >
               <ChevronLeft size={24} />
@@ -313,7 +483,9 @@ function LibraryView({ books, onSelect, onAddBook }) {
           </>
         )}
 
-          <div ref={shelf1Ref} className={`flex items-end gap-2 px-20 z-10 relative overflow-x-auto flex-nowrap scroll-smooth [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] ${readingBooks.length > 0 ? 'pt-32 -mt-24 min-h-[320px]' : 'min-h-[240px]'}`}>          {readingBooks.length > 0 ? readingBooks.map(renderBookSpine) : (
+          {/* Notice we changed -mt-24 to -mt-32 and min-h-[320px] to min-h-[280px] */}
+        <div ref={shelf1Ref} className={`flex items-end gap-2 px-20 z-30 relative overflow-x-auto flex-nowrap scroll-smooth [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] ${readingBooks.length > 0 ? 'pt-32 -mt-32 min-h-[280px]' : 'min-h-[240px]'}`}>
+          {readingBooks.length > 0 ? readingBooks.map(renderBookSpine) : (
             <div className="flex flex-col items-start gap-3 mb-8 w-full max-w-md">
               <div className="text-stone-400 italic">No books currently being read.</div>
               {books.length > 0 && suggestionsType !== 'history' && !loadingType && (
@@ -338,11 +510,19 @@ function LibraryView({ books, onSelect, onAddBook }) {
 
       {/* Shelf 2: Up Next & Finished */}
       <div className="relative group">
-        <div className="flex items-center justify-between mb-8 pr-4">
-          <h2 className="text-xl font-serif font-semibold text-amber-900 flex items-center gap-2">
-            <Library size={24} className="text-amber-700"/> The Collection
-          </h2>
-          <div className="flex items-center gap-2 text-sm bg-white/80 border border-stone-200 rounded-full px-3 py-1.5 shadow-sm backdrop-blur-sm z-20 relative">
+        {/* 1. REMOVED 'relative' and 'z-20' from this main wrapper so its children can break out */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2 pr-4 items-start">
+          
+          {/* 2. ADDED 'relative z-20' here so the title stays behind the tooltips */}
+          <div className="flex items-center gap-3 relative z-20">
+            <Library size={32} className="text-[#C05D22] drop-shadow-sm shrink-0" />
+            <h2 className="font-['Noto_Serif'] italic font-bold text-4xl md:text-5xl text-[#C05D22] tracking-tight drop-shadow-sm">
+              The Collection
+            </h2>
+          </div>
+          
+          {/* 3. CHANGED to 'z-40' so the dropdown punches through the invisible bookshelf padding */}
+          <div className="flex items-center gap-2 text-sm bg-[#FCF9F2]/80 border border-orange-900/10 rounded-full px-3 py-1.5 shadow-sm backdrop-blur-sm z-40 relative">
             <Filter size={14} className="text-stone-500" />
             <select 
               value={collectionFilter} 
@@ -361,14 +541,14 @@ function LibraryView({ books, onSelect, onAddBook }) {
           <>
             <button 
               onClick={() => scrollShelf(shelf2Ref, 'left')}
-              className="absolute left-0 bottom-16 md:bottom-24 z-30 p-2 bg-white/95 backdrop-blur shadow-lg border border-stone-200 text-stone-500 hover:text-amber-700 hover:bg-white rounded-full opacity-0 group-hover:opacity-100 transition-all focus:opacity-100 hover:scale-110"
+              className="absolute left-0 bottom-16 md:bottom-24 z-40 p-2 bg-white/95 backdrop-blur shadow-lg border border-stone-200 text-stone-500 hover:text-amber-700 hover:bg-white rounded-full opacity-0 group-hover:opacity-100 transition-all focus:opacity-100 hover:scale-110"
               aria-label="Scroll left"
             >
               <ChevronLeft size={24} />
             </button>
             <button 
               onClick={() => scrollShelf(shelf2Ref, 'right')}
-              className="absolute right-0 bottom-16 md:bottom-24 z-30 p-2 bg-white/95 backdrop-blur shadow-lg border border-stone-200 text-stone-500 hover:text-amber-700 hover:bg-white rounded-full opacity-0 group-hover:opacity-100 transition-all focus:opacity-100 hover:scale-110"
+              className="absolute right-0 bottom-16 md:bottom-24 z-40 p-2 bg-white/95 backdrop-blur shadow-lg border border-stone-200 text-stone-500 hover:text-amber-700 hover:bg-white rounded-full opacity-0 group-hover:opacity-100 transition-all focus:opacity-100 hover:scale-110"
               aria-label="Scroll right"
             >
               <ChevronRight size={24} />
@@ -376,7 +556,8 @@ function LibraryView({ books, onSelect, onAddBook }) {
           </>
         )}
 
-        <div ref={shelf2Ref} className={`flex items-end gap-2 px-20 z-10 relative overflow-x-auto flex-nowrap scroll-smooth [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] ${otherBooks.length > 0 ? 'pt-32 -mt-24 min-h-[320px]' : 'min-h-[240px]'}`}>
+        {/* Changed -mt-24 to -mt-32 and min-h-[320px] to min-h-[280px] */}
+        <div ref={shelf2Ref} className={`flex items-end gap-2 px-20 z-30 relative overflow-x-auto flex-nowrap scroll-smooth [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] ${otherBooks.length > 0 ? 'pt-32 -mt-32 min-h-[280px]' : 'min-h-[240px]'}`}>
            {otherBooks.length > 0 ? otherBooks.map(renderBookSpine) : (
             <div className="flex flex-col items-start gap-3 mb-8 w-full max-w-md">
               <div className="text-stone-400 italic">No books in this view.</div>
@@ -444,9 +625,12 @@ function MetricsView({ books }) {
 
   return (
     <div className="animate-in fade-in duration-500 space-y-8">
-      <h2 className="text-3xl font-serif font-bold text-amber-900 flex items-center gap-3">
-        <BarChart2 className="text-amber-700" size={32} /> Your Year in Books
-      </h2>
+      <div className="mb-4 flex items-center gap-3">
+        <BarChart2 size={36} className="text-[#C05D22] drop-shadow-sm shrink-0" />
+        <h2 className="font-['Noto_Serif'] italic font-bold text-4xl md:text-5xl text-[#C05D22] tracking-tight drop-shadow-sm">
+          Your Year in Books
+        </h2>
+      </div>
       
       {/* Top Stats Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -540,18 +724,24 @@ function MetricsView({ books }) {
 }
 
 // --- Book Detail View ---
-function BookDetailView({ book, onUpdate, onBack }) {
+function BookDetailView({ book, onUpdate, onBack, onDelete }) {
   const [activeSubTab, setActiveSubTab] = useState('progress'); // progress, notes, ai
   const [coverUrl, setCoverUrl] = useState(book.coverUrl);
-  
-  // Rating state
   const [ratingInput, setRatingInput] = useState(book.rating ? book.rating.toString() : '');
 
-  const progressPercent = Math.round((book.currentPage / book.totalPages) * 100) || 0;
+  // 1. THE SAFETY LOCK: Remembers if we've already checked OpenLibrary
+  const hasAttemptedFetch = useRef(false);
 
-useEffect(() => {
-    // If it doesn't have a cover URL saved, try to fetch it once using OpenLibrary
-    if (!book.coverUrl) {
+  // Safely calculate math even if the input is temporarily empty
+  const safeCurrentPage = parseInt(book.currentPage, 10) || 0;
+  const progressPercent = Math.round((safeCurrentPage / book.totalPages) * 100) || 0;
+  const pagesLeft = book.totalPages - safeCurrentPage;
+
+  useEffect(() => {
+    // 2. CHECK THE LOCK: Only run if we don't have a cover AND haven't tried yet
+    if (!book.coverUrl && !hasAttemptedFetch.current) {
+      hasAttemptedFetch.current = true; // Instantly lock the door!
+
       const fetchCover = async () => {
         try {
           const query = encodeURIComponent(`${book.title} ${book.author}`);
@@ -559,7 +749,6 @@ useEffect(() => {
           const data = await res.json();
           const doc = data.docs?.[0];
           
-          // OpenLibrary stores covers by an ID number
           if (doc && doc.cover_i) {
             const url = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
             setCoverUrl(url);
@@ -582,17 +771,22 @@ useEffect(() => {
   };
 
   const handlePageUpdate = (val) => {
+    if (val === '') {
+      onUpdate({ currentPage: '' });
+      return;
+    }
+    
     let newPage = parseInt(val, 10);
-    if (isNaN(newPage)) newPage = 0;
+    if (isNaN(newPage)) return; 
+    
     newPage = Math.min(book.totalPages, Math.max(0, newPage));
     
     const updates = { currentPage: newPage };
     
-    // Automatically manage shelf status based on page progress
     if (newPage === book.totalPages && book.status !== 'read') {
-      updates.status = 'read'; // Auto-finish
+      updates.status = 'read'; 
     } else if (newPage > 0 && newPage < book.totalPages && book.status === 'want_to_read') {
-      updates.status = 'reading'; // Auto-start reading
+      updates.status = 'reading'; 
     }
     
     onUpdate(updates);
@@ -600,21 +794,32 @@ useEffect(() => {
 
   return (
     <div className="max-w-4xl mx-auto mt-2 animate-in fade-in zoom-in-95 duration-300">
-      <button 
-        onClick={onBack}
-        className="mb-6 flex items-center gap-2 text-stone-500 hover:text-amber-700 transition-colors font-medium text-sm"
-      >
-        <ArrowLeft size={16} /> Back to Library
-      </button>
+      
+      <div className="flex justify-between items-center mb-6">
+        <button 
+          onClick={onBack}
+          className="flex items-center gap-2 text-stone-500 hover:text-amber-700 transition-colors font-medium text-sm"
+        >
+          <ArrowLeft size={16} /> Back to Library
+        </button>
+        
+        <button 
+          onClick={() => {
+            console.log("0. Button was physically clicked!"); 
+            onDelete(book.id || book._id); 
+          }}
+          className="flex items-center gap-2 text-red-400 hover:text-red-700 transition-colors font-bold text-sm px-3 py-1.5 rounded-full hover:bg-red-50"
+        >
+          <XCircle size={16} /> Delete Book
+        </button>
+      </div>
 
-      {/* Book Header */}
-      <div className="flex flex-col md:flex-row gap-8 mb-8 bg-white p-6 rounded-3xl shadow-sm border border-stone-100">
+      <div className="flex flex-col md:flex-row gap-8 mb-8 bg-white p-6 rounded-3xl shadow-sm border border-stone-100">        
         <div className={`w-48 h-72 ${book.coverColor} rounded-md shadow-2xl flex-shrink-0 flex items-center justify-center p-4 relative overflow-hidden`}>
           {coverUrl ? (
             <img src={coverUrl} alt={`Cover of ${book.title}`} className="absolute inset-0 w-full h-full object-cover z-20" />
           ) : (
             <>
-              {/* Faux book texture fallback */}
               <div className="absolute inset-0 opacity-20 bg-[url('https://www.transparenttextures.com/patterns/handmade-paper.png')] mix-blend-overlay"></div>
               <div className="absolute left-0 top-0 bottom-0 w-3 bg-black/20"></div>
               <h2 className="text-white text-xl font-serif font-bold text-center z-10 leading-snug break-words drop-shadow-md">
@@ -673,7 +878,6 @@ useEffect(() => {
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="flex border-b border-stone-200 mb-6">
         {[
           { id: 'progress', icon: <BookOpen size={18}/>, label: 'Progress' },
@@ -694,7 +898,6 @@ useEffect(() => {
         ))}
       </div>
 
-      {/* Tab Content */}
       <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-stone-100 min-h-[400px]">
         {activeSubTab === 'progress' && (
           <div className="max-w-xl animate-in fade-in">
@@ -703,34 +906,38 @@ useEffect(() => {
             <div className="flex items-center gap-4 mb-8">
                <input 
                  type="number" 
-                 value={book.currentPage}
+                 value={book.currentPage || ''} // 3. ADDED FALLBACK HERE
                  onChange={(e) => handlePageUpdate(e.target.value)}
                  className="w-24 text-3xl font-serif font-bold text-stone-800 border-b-2 border-amber-200 focus:border-amber-600 focus:outline-none py-1 text-center bg-transparent"
                />
                <span className="text-xl text-stone-400 font-serif">of {book.totalPages} pages</span>
             </div>
 
-            {/* Slider */}
-            <div className="mb-8">
+            <div className="relative mb-6 h-6 flex items-center group mt-8">
+              <div className="absolute w-full h-4 bg-stone-100 rounded-full shadow-inner pointer-events-none"></div>
+              <div 
+                className="absolute left-0 h-4 bg-gradient-to-r from-amber-400 to-amber-600 rounded-full pointer-events-none transition-all duration-300 ease-out" 
+                style={{ width: `${progressPercent}%` }}
+              ></div>
+              <div 
+                className="absolute h-6 w-6 bg-white border-4 border-amber-600 rounded-full shadow-md pointer-events-none group-hover:scale-110 transition-transform z-0"
+                style={{ 
+                  left: `calc(${progressPercent}% - 12px)` 
+                }}
+              ></div>
               <input 
                 type="range" 
                 min="0" 
                 max={book.totalPages} 
-                value={book.currentPage}
+                value={safeCurrentPage}
                 onChange={(e) => handlePageUpdate(e.target.value)}
-                className="w-full h-2 bg-stone-200 rounded-lg appearance-none cursor-pointer accent-amber-600"
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
               />
             </div>
 
-            <div className="w-full bg-stone-100 rounded-full h-4 mb-2 overflow-hidden shadow-inner">
-              <div 
-                className="bg-gradient-to-r from-amber-400 to-amber-600 h-4 rounded-full transition-all duration-500 ease-out" 
-                style={{ width: `${progressPercent}%` }}
-              ></div>
-            </div>
-            <div className="flex justify-between text-sm font-bold text-stone-500">
+            <div className="flex justify-between text-sm font-bold text-stone-500 mb-8">
               <span>{progressPercent}% Complete</span>
-              <span>{book.totalPages - book.currentPage} pages left</span>
+              <span>{pagesLeft} pages left</span>
             </div>
           </div>
         )}
@@ -738,7 +945,7 @@ useEffect(() => {
         {activeSubTab === 'notes' && (
           <div className="h-full flex flex-col animate-in fade-in">
             <textarea
-              value={book.notes}
+              value={book.notes || ''} // 4. ADDED FALLBACK HERE
               onChange={(e) => onUpdate({ notes: e.target.value })}
               placeholder="Jot down your thoughts, favorite quotes, or reminders here..."
               className="w-full flex-1 min-h-[300px] p-6 bg-[#faf9f5] border border-stone-200 rounded-2xl resize-none focus:outline-none focus:ring-2 focus:ring-amber-500 text-stone-700 leading-relaxed font-serif text-lg shadow-inner"
@@ -979,10 +1186,12 @@ function AddBookModal({ onClose, onAdd }) {
     setShowManual(true); // Switch to the form view to confirm details
   };
 
-  const handleSubmit = (e) => {
+const handleSubmit = async (e) => { // <-- Made this async
     e.preventDefault();
     if (title && author && totalPages) {
-      onAdd({ 
+      
+      // Wait to see if the book was successfully added without being a duplicate
+      const success = await onAdd({ 
         title, 
         author, 
         genre: genre || 'Fiction',
@@ -990,6 +1199,13 @@ function AddBookModal({ onClose, onAdd }) {
         coverColor: coverColor,
         coverUrl: coverUrl
       });
+
+      // If it worked, reset the modal back to the clean search view!
+      if (success) {
+        setShowManual(false);
+        setSearchQuery('');
+        setSearchResults([]);
+      }
     }
   };
 
